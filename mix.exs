@@ -4,7 +4,7 @@ defmodule Oidcc.Plug.MixProject do
   def project do
     [
       app: :oidcc_plug,
-      version: "0.2.0",
+      version: "0.3.2",
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -16,7 +16,15 @@ defmodule Oidcc.Plug.MixProject do
       """,
       package: package(),
       test_coverage: [tool: ExCoveralls],
-      preferred_cli_env: [
+      dialyzer: [
+        plt_add_apps: [:mix]
+      ]
+    ]
+  end
+
+  def cli do
+    [
+      preferred_envs: [
         coveralls: :test,
         "coveralls.detail": :test,
         "coveralls.post": :test,
@@ -34,7 +42,7 @@ defmodule Oidcc.Plug.MixProject do
     ]
   end
 
-  defp package() do
+  defp package do
     [
       maintainers: ["Jonatan Männchen"],
       files: [
@@ -56,20 +64,25 @@ defmodule Oidcc.Plug.MixProject do
       source_ref: ref,
       extras: ["README.md"],
       logo: "assets/logo.svg",
-      assets: "assets"
+      assets: %{"assets" => "assets"}
     ]
   end
 
   # Run "mix help deps" to learn about dependencies.
   defp deps do
+    # styler:sort
     [
-      {:oidcc, "~> 3.0"},
-      {:plug, "~> 1.14"},
-      {:ex_doc, "~> 0.29.4", only: :dev, runtime: false},
-      {:excoveralls, "~> 0.17.1", only: :test, runtime: false},
-      {:dialyxir, "~> 1.4", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: :dev, runtime: false},
-      {:mock, "~> 0.3.8", only: :test}
+      {:dialyxir, "~> 1.4", only: :dev, runtime: false},
+      {:ex_doc, "~> 0.29", only: :dev, runtime: false},
+      {:excoveralls, "~> 0.18.1", only: :test, runtime: false},
+      {:igniter, "~> 0.5.50 or ~> 0.6.0", optional: true},
+      {:mock, "~> 0.3.8", only: :test},
+      {:oidcc, "~> 3.7"},
+      {:phoenix, "~> 1.7", only: [:dev, :test]},
+      {:phx_new, "~> 1.7", only: :test},
+      {:plug, "~> 1.14"},
+      {:styler, "~> 1.4", only: [:dev, :test], runtime: false}
     ]
   end
 end

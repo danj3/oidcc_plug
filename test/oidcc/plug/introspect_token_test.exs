@@ -1,8 +1,9 @@
 defmodule Oidcc.Plug.IntrospectTokenTest do
   use ExUnit.Case, async: false
-  use Plug.Test
 
   import Mock
+  import Plug.Conn
+  import Plug.Test
 
   alias Oidcc.Plug.ExtractAuthorization
   alias Oidcc.Plug.IntrospectToken
@@ -10,10 +11,16 @@ defmodule Oidcc.Plug.IntrospectTokenTest do
   doctest IntrospectToken
 
   describe inspect(&IntrospectToken.call/2) do
-    test_with_mock "validates token using introspection", %{}, Oidcc, [],
-      introspect_token: fn "token", ProviderName, "client_id", "client_secret", %{} ->
-        {:ok, %Oidcc.TokenIntrospection{active: true}}
-      end do
+    with_mocks [
+      {Oidcc.ClientContext, [],
+       from_configuration_worker: fn ProviderName, "client_id", "client_secret", %{} ->
+         {:ok, :client_context}
+       end},
+      {Oidcc.TokenIntrospection, [],
+       introspect: fn "token", :client_context, %{} ->
+         {:ok, %Oidcc.TokenIntrospection{active: true}}
+       end}
+    ] do
       opts =
         IntrospectToken.init(
           provider: ProviderName,
@@ -61,10 +68,16 @@ defmodule Oidcc.Plug.IntrospectTokenTest do
       end
     end
 
-    test_with_mock "relays introspection error", %{}, Oidcc, [],
-      introspect_token: fn "token", ProviderName, "client_id", "client_secret", %{} ->
-        {:error, :reason}
-      end do
+    with_mocks [
+      {Oidcc.ClientContext, [],
+       from_configuration_worker: fn ProviderName, "client_id", "client_secret", %{} ->
+         {:ok, :client_context}
+       end},
+      {Oidcc.TokenIntrospection, [],
+       introspect: fn "token", :client_context, %{} ->
+         {:error, :reason}
+       end}
+    ] do
       opts =
         IntrospectToken.init(
           provider: ProviderName,
@@ -80,10 +93,16 @@ defmodule Oidcc.Plug.IntrospectTokenTest do
       end
     end
 
-    test_with_mock "sends error response with inactive token", %{}, Oidcc, [],
-      introspect_token: fn "token", ProviderName, "client_id", "client_secret", %{} ->
-        {:ok, %Oidcc.TokenIntrospection{active: false}}
-      end do
+    with_mocks [
+      {Oidcc.ClientContext, [],
+       from_configuration_worker: fn ProviderName, "client_id", "client_secret", %{} ->
+         {:ok, :client_context}
+       end},
+      {Oidcc.TokenIntrospection, [],
+       introspect: fn "token", :client_context, %{} ->
+         {:ok, %Oidcc.TokenIntrospection{active: false}}
+       end}
+    ] do
       opts =
         IntrospectToken.init(
           provider: ProviderName,
@@ -103,10 +122,16 @@ defmodule Oidcc.Plug.IntrospectTokenTest do
                |> IntrospectToken.call(opts)
     end
 
-    test_with_mock "can customize inactive token response", %{}, Oidcc, [],
-      introspect_token: fn "token", ProviderName, "client_id", "client_secret", %{} ->
-        {:ok, %Oidcc.TokenIntrospection{active: false}}
-      end do
+    with_mocks [
+      {Oidcc.ClientContext, [],
+       from_configuration_worker: fn ProviderName, "client_id", "client_secret", %{} ->
+         {:ok, :client_context}
+       end},
+      {Oidcc.TokenIntrospection, [],
+       introspect: fn "token", :client_context, %{} ->
+         {:ok, %Oidcc.TokenIntrospection{active: false}}
+       end}
+    ] do
       opts =
         IntrospectToken.init(
           provider: ProviderName,
@@ -130,9 +155,10 @@ defmodule Oidcc.Plug.IntrospectTokenTest do
 
     test "uses cache if provided and found" do
       defmodule ActiveCache do
-        alias Oidcc.Plug.Cache
+        @moduledoc false
+        @behaviour Oidcc.Plug.Cache
 
-        @behaviour Cache
+        alias Oidcc.Plug.Cache
 
         @impl Cache
         def get(_type, _token, _conn), do: {:ok, %Oidcc.TokenIntrospection{active: true}}
@@ -161,9 +187,10 @@ defmodule Oidcc.Plug.IntrospectTokenTest do
 
     test "uses cache if provided and found and inactive" do
       defmodule InactiveCache do
-        alias Oidcc.Plug.Cache
+        @moduledoc false
+        @behaviour Oidcc.Plug.Cache
 
-        @behaviour Cache
+        alias Oidcc.Plug.Cache
 
         @impl Cache
         def get(_type, _token, _conn), do: {:ok, %Oidcc.TokenIntrospection{active: false}}
@@ -190,11 +217,11 @@ defmodule Oidcc.Plug.IntrospectTokenTest do
     end
   end
 
+  # Broken because of https://github.com/zitadel/zitadel/issues/8590
+  @tag :skip
   test "integration test" do
     pid =
-      start_link_supervised!(
-        {Oidcc.ProviderConfiguration.Worker, %{issuer: "https://erlef-test-w4a8z2.zitadel.cloud"}}
-      )
+      start_link_supervised!({Oidcc.ProviderConfiguration.Worker, %{issuer: "https://erlef-test-w4a8z2.zitadel.cloud"}})
 
     %{"key" => key, "keyId" => kid, "userId" => subject} =
       :oidcc_plug

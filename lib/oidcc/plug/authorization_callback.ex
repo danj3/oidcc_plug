@@ -80,12 +80,17 @@ defmodule Oidcc.Plug.AuthorizationCallback do
 
   @behaviour Plug
 
-  alias Oidcc.Plug.Authorize
+  import Oidcc.Plug.Config, only: [evaluate_config: 1]
 
   import Plug.Conn,
-    only: [get_session: 2, delete_session: 2, put_private: 3, get_peer_data: 1, get_req_header: 2]
+    only: [get_session: 2, delete_session: 2, put_private: 3, get_req_header: 2]
 
-  import Oidcc.Plug.Config, only: [evaluate_config: 1]
+  alias Oidcc.ClientContext
+  alias Oidcc.Plug.Authorize
+  alias Oidcc.Plug.Utils
+  alias Oidcc.ProviderConfiguration
+  alias Oidcc.Token
+  alias Oidcc.Userinfo
 
   @typedoc """
   Plug Configuration Options
@@ -95,6 +100,8 @@ defmodule Oidcc.Plug.AuthorizationCallback do
   * `provider` - name of the `Oidcc.ProviderConfiguration.Worker`
   * `client_id` - OAuth Client ID to use for the introspection
   * `client_secret` - OAuth Client Secret to use for the introspection
+  * `client_context_opts` - Options for Client Context Initialization
+  * `client_profile_opts` - Options for Client Context Profiles
   * `redirect_uri` - Where to redirect for callback
   * `check_useragent` - check if useragent is the same as before the
     authorization request
@@ -102,12 +109,19 @@ defmodule Oidcc.Plug.AuthorizationCallback do
     authorization request
   * `retrieve_userinfo` - whether to load userinfo from the provider
   * `request_opts` - request opts for http calls to provider
+  * `client_store` - A module name that implements the `Oidcc.Plug.ClientStore` behaviour
+  to fetch the client context from a store instead of using the `provider`, `client_id` and `client_secret`
+  directly. This is useful for storing the client context in a database or other persistent
+  storage.
   """
   @typedoc since: "0.1.0"
   @type opts() :: [
-          provider: GenServer.name(),
-          client_id: String.t() | (-> String.t()),
-          client_secret: String.t() | (-> String.t()),
+          provider: GenServer.name() | nil,
+          client_store: module() | nil,
+          client_id: String.t() | (-> String.t()) | nil,
+          client_secret: String.t() | (-> String.t()) | nil,
+          client_context_opts: :oidcc_client_context.opts() | (-> :oidcc_client_context.opts()),
+          client_profile_opts: :oidcc_profile.opts(),
           redirect_uri: String.t() | (-> String.t()),
           check_useragent: boolean(),
           check_peer_ip: boolean(),
@@ -127,10 +141,14 @@ defmodule Oidcc.Plug.AuthorizationCallback do
   @impl Plug
   def init(opts),
     do:
-      Keyword.validate!(opts, [
+      opts
+      |> Keyword.validate!([
         :provider,
         :client_id,
+        :client_store,
         :client_secret,
+        :client_context_opts,
+        :client_profile_opts,
         :redirect_uri,
         :preferred_auth_methods,
         check_useragent: true,
@@ -138,20 +156,34 @@ defmodule Oidcc.Plug.AuthorizationCallback do
         retrieve_userinfo: true,
         request_opts: %{}
       ])
+      |> Utils.validate_client_context_opts!()
 
   @impl Plug
   def call(%Plug.Conn{params: params, body_params: body_params} = conn, opts) do
-    provider = Keyword.fetch!(opts, :provider)
-    client_id = opts |> Keyword.fetch!(:client_id) |> evaluate_config()
-    client_secret = opts |> Keyword.fetch!(:client_secret) |> evaluate_config()
     redirect_uri = opts |> Keyword.fetch!(:redirect_uri) |> evaluate_config()
+    client_profile_opts = Keyword.get(opts, :client_profile_opts, %{profiles: []})
 
     params = Map.merge(params, body_params)
 
-    %{nonce: nonce, peer_ip: peer_ip, useragent: useragent, pkce_verifier: pkce_verifier} =
+    %{
+      nonce: nonce,
+      peer_ip: peer_ip,
+      useragent: useragent,
+      pkce_verifier: pkce_verifier,
+      state_verifier: state_verifier
+    } =
       case get_session(conn, Authorize.get_session_name()) do
-        nil -> %{nonce: :any, peer_ip: nil, useragent: nil, pkce_verifier: :none}
-        %{} = session -> session
+        nil ->
+          %{
+            nonce: :any,
+            peer_ip: nil,
+            useragent: nil,
+            pkce_verifier: :none,
+            state_verifier: :none
+          }
+
+        %{} = session ->
+          session
       end
 
     check_peer_ip? = Keyword.fetch!(opts, :check_peer_ip)
@@ -159,38 +191,68 @@ defmodule Oidcc.Plug.AuthorizationCallback do
     retrieve_userinfo? = Keyword.fetch!(opts, :retrieve_userinfo)
 
     result =
-      with :ok <- check_peer_ip(conn, peer_ip, check_peer_ip?),
+      with {:ok, client_context} <-
+             Utils.get_client_context(conn, opts),
+           {:ok, client_context, profile_opts} <-
+             apply_profile(client_context, client_profile_opts),
+           :ok <- check_peer_ip(conn, peer_ip, check_peer_ip?),
            :ok <- check_useragent(conn, useragent, check_useragent?),
+           :ok <- check_state(params, state_verifier),
+           :ok <- check_issuer_request_param(params, client_context),
            {:ok, code} <- fetch_request_param(params, "code"),
            scope = Map.get(params, "scope", "openid"),
-           scopes = :oidcc_scope.parse(scope),
            token_opts =
-             opts
-             |> Keyword.take([:request_opts, :preferred_auth_methods])
-             |> Map.new()
-             |> Map.merge(%{
-               nonce: nonce,
-               scope: scopes,
-               redirect_uri: redirect_uri,
-               pkce_verifier: pkce_verifier
-             }),
+             prepare_retrieve_opts(opts, scope, nonce, redirect_uri, pkce_verifier),
            {:ok, token} <-
              retrieve_token(
                code,
-               provider,
-               client_id,
-               client_secret,
+               client_context,
                retrieve_userinfo?,
-               token_opts
+               Map.merge(profile_opts, token_opts)
              ),
-           {:ok, userinfo} <-
-             retrieve_userinfo(token, provider, client_id, client_secret, retrieve_userinfo?) do
+           userinfo_opts = prepare_userinfo_opts(opts),
+           {:ok, userinfo} <- retrieve_userinfo(token, client_context, userinfo_opts, retrieve_userinfo?) do
         {:ok, {token, userinfo}}
       end
 
     conn
     |> delete_session(Authorize.get_session_name())
     |> put_private(__MODULE__, result)
+  end
+
+  @spec prepare_retrieve_opts(
+          opts :: opts(),
+          scope :: String.t(),
+          nonce :: String.t() | :any,
+          redirect_uri :: String.t(),
+          pkce_verifier :: String.t() | :none
+        ) :: :oidcc_token.retrieve_opts()
+  defp prepare_retrieve_opts(opts, scope, nonce, redirect_uri, pkce_verifier) do
+    scopes = :oidcc_scope.parse(scope)
+
+    refresh_jwks = Utils.get_refresh_jwks_fun(opts)
+
+    opts
+    |> Keyword.take([:request_opts, :preferred_auth_methods])
+    |> Map.new()
+    |> Map.merge(%{
+      nonce: nonce,
+      scope: scopes,
+      redirect_uri: redirect_uri,
+      pkce_verifier: pkce_verifier,
+      refresh_jwks: refresh_jwks
+    })
+    |> case do
+      %{pkce_verifier: :none} = opts -> Map.delete(opts, :pkce_verifier)
+      opts -> opts
+    end
+  end
+
+  @spec prepare_userinfo_opts(opts :: opts()) :: :oidcc_userinfo.retrieve_opts()
+  defp prepare_userinfo_opts(opts) do
+    refresh_jwks = Utils.get_refresh_jwks_fun(opts)
+
+    %{refresh_jwks: refresh_jwks}
   end
 
   @spec check_peer_ip(
@@ -201,13 +263,8 @@ defmodule Oidcc.Plug.AuthorizationCallback do
   defp check_peer_ip(conn, peer_ip, check_peer_ip?)
   defp check_peer_ip(_conn, _peer_ip, false), do: :ok
   defp check_peer_ip(_conn, nil, true), do: :ok
-
-  defp check_peer_ip(%Plug.Conn{} = conn, peer_ip, true) do
-    case get_peer_data(conn) do
-      %{address: ^peer_ip} -> :ok
-      %{} -> {:error, :peer_ip_mismatch}
-    end
-  end
+  defp check_peer_ip(%Plug.Conn{remote_ip: peer_ip}, peer_ip, true), do: :ok
+  defp check_peer_ip(%Plug.Conn{}, _peer_ip, true), do: {:error, :peer_ip_mismatch}
 
   @spec check_useragent(
           conn :: Plug.Conn.t(),
@@ -234,16 +291,47 @@ defmodule Oidcc.Plug.AuthorizationCallback do
     end
   end
 
+  defp check_issuer_request_param(params, client_context)
+
+  defp check_issuer_request_param(params, %ClientContext{
+         provider_configuration: %ProviderConfiguration{
+           issuer: issuer,
+           authorization_response_iss_parameter_supported: true
+         }
+       }) do
+    with {:ok, given_issuer} <- fetch_request_param(params, "iss") do
+      if issuer == given_issuer do
+        :ok
+      else
+        {:error, {:invalid_issuer, given_issuer}}
+      end
+    end
+  end
+
+  defp check_issuer_request_param(_params, _client_context), do: :ok
+
+  defp check_state(params, state_verifier)
+  defp check_state(%{"state" => _state}, :none), do: {:error, :state_not_verified}
+  defp check_state(_params, :none), do: :ok
+
+  defp check_state(%{"state" => state}, state_verifier) do
+    if :erlang.phash2(state) == state_verifier do
+      :ok
+    else
+      {:error, :state_not_verified}
+    end
+  end
+
+  defp check_state(_params, _state), do: :ok
+
   @spec retrieve_token(
           code :: String.t(),
-          provider :: GenServer.name(),
-          client_id :: String.t(),
-          client_secret :: String.t(),
+          client_context :: ClientContext.t(),
           retrieve_userinfo? :: boolean(),
           token_opts :: :oidcc_token.retrieve_opts()
-        ) :: {:ok, Oidcc.Token.t()} | {:error, error()}
-  defp retrieve_token(code, provider, client_id, client_secret, retrieve_userinfo?, token_opts) do
-    case Oidcc.retrieve_token(code, provider, client_id, client_secret, token_opts) do
+        ) :: {:ok, Token.t()} | {:error, error()}
+  defp retrieve_token(code, client_context, retrieve_userinfo?, token_opts) do
+    case Token.retrieve(code, client_context, token_opts) do
       {:ok, token} -> {:ok, token}
       {:error, {:none_alg_used, token}} when retrieve_userinfo? -> {:ok, token}
       {:error, reason} -> {:error, reason}
@@ -251,22 +339,22 @@ defmodule Oidcc.Plug.AuthorizationCallback do
   end
 
   @spec retrieve_userinfo(
-          token :: Oidcc.Token.t(),
-          provider :: GenServer.name(),
-          client_id :: String.t(),
-          client_secret :: String.t(),
+          token :: Token.t(),
+          client_context :: ClientContext.t(),
+          userinfo_opts :: :oidcc_userinfo.retrieve_opts(),
           retrieve_userinfo? :: true
         ) :: {:ok, :oidcc_jwt_util.claims()} | {:error, error()}
   @spec retrieve_userinfo(
-          token :: Oidcc.Token.t(),
-          provider :: GenServer.name(),
-          client_id :: String.t(),
-          client_secret :: String.t(),
+          token :: Token.t(),
+          client_context :: ClientContext.t(),
+          userinfo_opts :: :oidcc_userinfo.retrieve_opts(),
           retrieve_userinfo? :: false
         ) :: {:ok, nil} | {:error, error()}
-  defp retrieve_userinfo(token, provider, client_id, client_secret, retrieve_userinfo?)
-  defp retrieve_userinfo(_token, _provider, _client_id, _client_secret, false), do: {:ok, nil}
+  defp retrieve_userinfo(token, client_context, userinfo_opts, retrieve_userinfo?)
+  defp retrieve_userinfo(_token, _client_context, _userinfo_opts, false), do: {:ok, nil}
 
-  defp retrieve_userinfo(token, provider, client_id, client_secret, true),
-    do: Oidcc.retrieve_userinfo(token, provider, client_id, client_secret, %{})
+  defp retrieve_userinfo(token, client_context, userinfo_opts, true),
+    do: Userinfo.retrieve(token, client_context, userinfo_opts)
+
+  defp apply_profile(client_context, profile_opts), do: ClientContext.apply_profiles(client_context, profile_opts)
 end

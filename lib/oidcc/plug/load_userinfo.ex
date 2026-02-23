@@ -30,9 +30,8 @@ defmodule Oidcc.Plug.LoadUserinfo do
 
   @behaviour Plug
 
-  import Plug.Conn, only: [put_private: 3, halt: 1, send_resp: 3]
-
   import Oidcc.Plug.Config, only: [evaluate_config: 1]
+  import Plug.Conn, only: [put_private: 3, halt: 1, send_resp: 3]
 
   alias Oidcc.Plug.ExtractAuthorization
 
@@ -96,6 +95,7 @@ defmodule Oidcc.Plug.LoadUserinfo do
       opts
       |> Keyword.fetch!(:userinfo_retrieve_opts)
       |> Map.put_new(:expected_subject, :any)
+      |> Map.put_new(:refresh_jwks, :oidcc_jwt_util.refresh_jwks_fun(provider))
 
     send_inactive_token_response = Keyword.fetch!(opts, :send_inactive_token_response)
 

@@ -13,6 +13,7 @@ defmodule Oidcc.Plug.ExtractAuthorization do
 
     plug Oidcc.Plug.ExtractAuthorization
 
+    plug Oidcc.Plug.RequireAuthorization, [...] # Ensure Authorization Token provided
     plug Oidcc.Plug.IntrospectToken, [...] # Check Token via Introspection
     plug Oidcc.Plug.LoadUserinfo, [...] # Check Token via Userinfo
     plug Oidcc.Plug.ValidateJwtToken, [...] # Check Token via JWT validation
@@ -36,16 +37,11 @@ defmodule Oidcc.Plug.ExtractAuthorization do
   """
   @typedoc since: "0.1.0"
   @type opts :: [
-          {:send_invalid_header_response,
-           (conn :: Plug.Conn.t(), given_header :: [String.t()] -> Plug.Conn.t())}
+          {:send_invalid_header_response, (conn :: Plug.Conn.t(), given_header :: [String.t()] -> Plug.Conn.t())}
         ]
 
   @impl Plug
-  def init(opts),
-    do:
-      Keyword.validate!(opts,
-        send_invalid_header_response: &__MODULE__.send_invalid_header_response/2
-      )
+  def init(opts), do: Keyword.validate!(opts, send_invalid_header_response: &__MODULE__.send_invalid_header_response/2)
 
   @impl Plug
   def call(%Plug.Conn{} = conn, opts) do

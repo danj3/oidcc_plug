@@ -1,8 +1,9 @@
 defmodule Oidcc.Plug.ValidateJwtTokenTest do
   use ExUnit.Case, async: false
-  use Plug.Test
 
   import Mock
+  import Plug.Conn
+  import Plug.Test
 
   alias Oidcc.Plug.ExtractAuthorization
   alias Oidcc.Plug.ValidateJwtToken
@@ -13,11 +14,11 @@ defmodule Oidcc.Plug.ValidateJwtTokenTest do
     test "validates token using jwt" do
       with_mocks [
         {Oidcc.ClientContext, [],
-         from_configuration_worker: fn ProviderName, "client_id", "client_secret" ->
+         from_configuration_worker: fn ProviderName, "client_id", "client_secret", %{} ->
            {:ok, :client_context}
          end},
         {Oidcc.Token, [],
-         validate_id_token: fn "token", :client_context, :any ->
+         validate_id_token: fn "token", :client_context, %{nonce: :any, refresh_jwks: _} ->
            {:ok, %{"sub" => "sub"}}
          end}
       ] do
@@ -72,11 +73,11 @@ defmodule Oidcc.Plug.ValidateJwtTokenTest do
     test "relays validation error" do
       with_mocks [
         {Oidcc.ClientContext, [],
-         from_configuration_worker: fn ProviderName, "client_id", "client_secret" ->
+         from_configuration_worker: fn ProviderName, "client_id", "client_secret", %{} ->
            {:ok, :client_context}
          end},
         {Oidcc.Token, [],
-         validate_id_token: fn "token", :client_context, :any ->
+         validate_id_token: fn "token", :client_context, %{nonce: :any, refresh_jwks: _} ->
            {:error, :reason}
          end}
       ] do
@@ -99,11 +100,11 @@ defmodule Oidcc.Plug.ValidateJwtTokenTest do
     test "sends error response with inactive token" do
       with_mocks [
         {Oidcc.ClientContext, [],
-         from_configuration_worker: fn ProviderName, "client_id", "client_secret" ->
+         from_configuration_worker: fn ProviderName, "client_id", "client_secret", %{} ->
            {:ok, :client_context}
          end},
         {Oidcc.Token, [],
-         validate_id_token: fn "token", :client_context, :any ->
+         validate_id_token: fn "token", :client_context, %{nonce: :any, refresh_jwks: _} ->
            {:error, :token_expired}
          end}
       ] do
@@ -130,11 +131,11 @@ defmodule Oidcc.Plug.ValidateJwtTokenTest do
     test "can customize inactive token response" do
       with_mocks [
         {Oidcc.ClientContext, [],
-         from_configuration_worker: fn ProviderName, "client_id", "client_secret" ->
+         from_configuration_worker: fn ProviderName, "client_id", "client_secret", %{} ->
            {:ok, :client_context}
          end},
         {Oidcc.Token, [],
-         validate_id_token: fn "token", :client_context, :any ->
+         validate_id_token: fn "token", :client_context, %{nonce: :any, refresh_jwks: _} ->
            {:error, :token_expired}
          end}
       ] do
@@ -163,9 +164,7 @@ defmodule Oidcc.Plug.ValidateJwtTokenTest do
 
   test "integration test" do
     pid =
-      start_link_supervised!(
-        {Oidcc.ProviderConfiguration.Worker, %{issuer: "https://erlef-test-w4a8z2.zitadel.cloud"}}
-      )
+      start_link_supervised!({Oidcc.ProviderConfiguration.Worker, %{issuer: "https://erlef-test-w4a8z2.zitadel.cloud"}})
 
     %{"key" => key, "keyId" => kid, "userId" => subject} =
       :oidcc_plug
