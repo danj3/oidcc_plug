@@ -66,6 +66,7 @@ defmodule Oidcc.Plug.Authorize do
   * `client_id` - OAuth Client ID to use for the introspection
   * `client_secret` - OAuth Client Secret to use for the introspection
   * `access_type` - `:public` (default) or `:confidential`
+  * `parameter_fn` - called after building request parameters, for adding non-standard request parameters.
   * `client_context_opts` - Options for Client Context Initialization
   * `client_profile_opts` - Options for Client Context Profiles
   * `client_store` - A module name that implements the `Oidcc.Plug.ClientStore` behaviour
@@ -84,9 +85,12 @@ defmodule Oidcc.Plug.Authorize do
           client_secret: String.t() | (-> String.t()) | nil,
           client_context_opts: :oidcc_client_context.opts() | (-> :oidcc_client_context.opts()) | nil,
           client_profile_opts: :oidcc_profile.opts(),
-          access_type: (:public | :confidential)
+          access_type: (:public | :confidential),
+          parameter_fn: (Map.t(), Plug.Conn.t() -> Map.t())
         ]
 
+  def param_pass(params, _conn), do: params
+  
   @impl Plug
   def init(opts),
     do:
@@ -99,7 +103,7 @@ defmodule Oidcc.Plug.Authorize do
         :redirect_uri,
         :client_context_opts,
         :client_profile_opts,
-        access_type: :public,
+        parameter_fn: &__MODULE__.param_pass/2,
         url_extension: [],
         scopes: ["openid"]
       ])
@@ -110,6 +114,7 @@ defmodule Oidcc.Plug.Authorize do
     redirect_uri = opts |> Keyword.fetch!(:redirect_uri) |> evaluate_config()
     client_profile_opts = Keyword.get(opts, :client_profile_opts, %{profiles: []})
     access_type = opts |> Keyword.get(:access_type, :public)
+    parameter_fn = Keyword.get(opts, :parameter_fn)
 
     state = Map.get(params, "state", :undefined)
     state_verifier = :erlang.phash2(state)
@@ -133,6 +138,7 @@ defmodule Oidcc.Plug.Authorize do
         pkce_verifier: pkce_verifier
       )
       |> Map.new()
+      |> parameter_fn.(conn)
 
     with {:ok, client_context} <- Utils.get_client_context(conn, opts),
          {:ok, client_context, profile_opts} <-
