@@ -50,6 +50,7 @@ defmodule Oidcc.Plug.AuthorizationCallback do
     def handle_callback(
       %Plug.Conn{private: %{
         Oidcc.Plug.AuthorizationCallback => {:ok, {token, userinfo}}
+        Oidcc.Plug.Authorize.State => "query_param_state" | nil
       }},
       _params
     ) do
@@ -80,7 +81,7 @@ defmodule Oidcc.Plug.AuthorizationCallback do
 
   @behaviour Plug
 
-  import Oidcc.Plug.Config, only: [evaluate_config: 1]
+  import Oidcc.Plug.Config, only: [evaluate_config: 2]
 
   import Plug.Conn,
     only: [get_session: 2, delete_session: 2, put_private: 3, get_req_header: 2]
@@ -118,11 +119,11 @@ defmodule Oidcc.Plug.AuthorizationCallback do
   @type opts() :: [
           provider: GenServer.name() | nil,
           client_store: module() | nil,
-          client_id: String.t() | (-> String.t()) | nil,
-          client_secret: String.t() | (-> String.t()) | nil,
+          client_id: String.t() | (-> String.t()) | (Plug.Conn.t() -> String.t()) | nil,
+          client_secret: String.t() | (-> String.t()) | (Plug.Conn.t() -> String.t()) | nil,
           client_context_opts: :oidcc_client_context.opts() | (-> :oidcc_client_context.opts()),
           client_profile_opts: :oidcc_profile.opts(),
-          redirect_uri: String.t() | (-> String.t()),
+          redirect_uri: String.t() | (-> String.t()) | (Plug.Conn.t() -> String.t()),
           check_useragent: boolean(),
           check_peer_ip: boolean(),
           retrieve_userinfo: boolean(),
@@ -160,7 +161,7 @@ defmodule Oidcc.Plug.AuthorizationCallback do
 
   @impl Plug
   def call(%Plug.Conn{params: params, body_params: body_params} = conn, opts) do
-    redirect_uri = opts |> Keyword.fetch!(:redirect_uri) |> evaluate_config()
+    redirect_uri = opts |> Keyword.fetch!(:redirect_uri) |> evaluate_config(conn)
     client_profile_opts = Keyword.get(opts, :client_profile_opts, %{profiles: []})
 
     params = Map.merge(params, body_params)
@@ -215,9 +216,15 @@ defmodule Oidcc.Plug.AuthorizationCallback do
         {:ok, {token, userinfo}}
       end
 
+    authorize_state =
+      params
+      |> Map.get("state", "")
+      |> Utils.remove_csrf_payload()
+
     conn
     |> delete_session(Authorize.get_session_name())
     |> put_private(__MODULE__, result)
+    |> put_private(Authorize.State, authorize_state)
   end
 
   @spec prepare_retrieve_opts(

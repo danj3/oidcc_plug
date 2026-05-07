@@ -26,15 +26,16 @@ defmodule Oidcc.Plug.Authorize do
 
   * `state` - State to relay to OpenID Provider. Commonly used for target redirect
     URL after authorization.
+    Accessible through `Plug.Conn.private[#{__MODULE__}.State]` after `Oidcc.Plug.AuthorizationCallback`
   """
   @moduledoc since: "0.1.0"
 
   @behaviour Plug
 
-  import Oidcc.Plug.Config, only: [evaluate_config: 1]
+  import Oidcc.Plug.Config, only: [evaluate_config: 2]
 
   import Plug.Conn,
-    only: [send_resp: 3, put_resp_header: 3, put_session: 3, get_req_header: 2]
+    only: [send_resp: 3, put_resp_header: 3, put_session: 3, get_req_header: 2, put_private: 3]
 
   alias Oidcc.Authorization
   alias Oidcc.ClientContext
@@ -61,6 +62,7 @@ defmodule Oidcc.Plug.Authorize do
 
   * `scopes` - scopes to request
   * `redirect_uri` - Where to redirect for callback
+  * `redirect_mode` - Selects how the redirect happens. Either `:inline` or `:manual`.
   * `url_extension` - Custom query parameters to add to the redirect URI
   * `provider` - name of the `Oidcc.ProviderConfiguration.Worker`
   * `client_id` - OAuth Client ID to use for the introspection
@@ -77,12 +79,13 @@ defmodule Oidcc.Plug.Authorize do
   @typedoc since: "0.1.0"
   @type opts :: [
           scopes: :oidcc_scope.scopes(),
-          redirect_uri: String.t() | (-> String.t()),
+          redirect_uri: String.t() | (-> String.t()) | (Plug.Conn.t() -> String.t()),
+          redirect_mode: :inline | :manual,
           url_extension: :oidcc_http_util.query_params(),
           provider: GenServer.name() | nil,
           client_store: module() | nil,
-          client_id: String.t() | (-> String.t()) | nil,
-          client_secret: String.t() | (-> String.t()) | nil,
+          client_id: String.t() | (-> String.t()) | (Plug.Conn.t() -> String.t()) | nil,
+          client_secret: String.t() | (-> String.t()) | (Plug.Conn.t() -> String.t()) | nil,
           client_context_opts: :oidcc_client_context.opts() | (-> :oidcc_client_context.opts()) | nil,
           client_profile_opts: :oidcc_profile.opts(),
           access_type: (:public | :confidential),
@@ -104,6 +107,7 @@ defmodule Oidcc.Plug.Authorize do
         :client_context_opts,
         :client_profile_opts,
         parameter_fn: &__MODULE__.param_pass/2,
+        redirect_mode: :inline,
         url_extension: [],
         scopes: ["openid"]
       ])
@@ -111,12 +115,17 @@ defmodule Oidcc.Plug.Authorize do
 
   @impl Plug
   def call(%Plug.Conn{params: params} = conn, opts) do
-    redirect_uri = opts |> Keyword.fetch!(:redirect_uri) |> evaluate_config()
+    redirect_uri = opts |> Keyword.fetch!(:redirect_uri) |> evaluate_config(conn)
+    redirect_mode = Keyword.fetch!(opts, :redirect_mode)
     client_profile_opts = Keyword.get(opts, :client_profile_opts, %{profiles: []})
     access_type = opts |> Keyword.get(:access_type, :public)
     parameter_fn = Keyword.get(opts, :parameter_fn)
 
-    state = Map.get(params, "state", :undefined)
+    state =
+      params
+      |> Map.get("state")
+      |> Utils.add_csrf_payload()
+
     state_verifier = :erlang.phash2(state)
 
     nonce = 31 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
@@ -156,12 +165,21 @@ defmodule Oidcc.Plug.Authorize do
         pkce_verifier: pkce_verifier,
         state_verifier: state_verifier
       })
-      |> put_resp_header("location", IO.iodata_to_binary(redirect_uri))
-      |> send_resp(302, "")
+      |> handle_redirect_uri(IO.iodata_to_binary(redirect_uri), redirect_mode)
     else
       {:error, reason} ->
         raise Error, reason: reason
     end
+  end
+
+  defp handle_redirect_uri(conn, redirect_uri, :inline) do
+    conn
+    |> put_resp_header("location", redirect_uri)
+    |> send_resp(302, "")
+  end
+
+  defp handle_redirect_uri(conn, redirect_uri, :manual) do
+    put_private(conn, __MODULE__, redirect_uri)
   end
 
   defp apply_profile(client_context, profile_opts), do: ClientContext.apply_profiles(client_context, profile_opts)

@@ -85,7 +85,7 @@ in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:oidcc_plug, "~> 0.3.0"}
+    {:oidcc_plug, "~> 0.4.0"}
   ]
 end
 ```
@@ -105,7 +105,7 @@ mix igniter.add_extension phoenix
 
 # Generate Provider, Controller, Router & Config
 mix oidcc_plug.gen.controller \
-    --name MyApp.AuthController \
+    --name MyAppWeb.AuthController \
     --provider MyApp.OpenIDProvider \
     --base-url /auth \
     --issuer https://account.google.com \

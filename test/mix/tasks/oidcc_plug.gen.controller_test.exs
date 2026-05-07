@@ -56,12 +56,10 @@ defmodule OidccPlug.Gen.ControllerTest do
        |      Test.Repo,
     ...|
     """)
-    |> assert_has_patch("lib/test/test_web/auth_html.ex", """
-    |defmodule Test.TestWeb.AuthHTML do
-    |  defmodule Test.TestWeb.AuthHTML do
-    |    use TestWeb, :html
-    |    embed_templates("auth_html/*")
-    |  end
+    |> assert_has_patch("lib/test_web/controllers/auth_html.ex", """
+    |defmodule TestWeb.AuthHTML do
+    |  use TestWeb, :html
+    |  embed_templates("auth_html/*")
     |end
     |
     """)
@@ -151,6 +149,7 @@ defmodule OidccPlug.Gen.ControllerTest do
      + |
      + |      <%= case Plug.Conn.get_session(@conn, "oidcc_claims") do %>
      + |        <% nil -> %>
+     + |          <%!-- To pass state through to the callback append a ?state=… parameter --%>
      + |          <a href={ ~p"/auth/authorize" }>
      + |            Log In
      + |          </a>

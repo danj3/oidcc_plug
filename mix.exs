@@ -4,7 +4,7 @@ defmodule Oidcc.Plug.MixProject do
   def project do
     [
       app: :oidcc_plug,
-      version: "0.3.2",
+      version: "0.4.0",
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -76,7 +76,7 @@ defmodule Oidcc.Plug.MixProject do
       {:dialyxir, "~> 1.4", only: :dev, runtime: false},
       {:ex_doc, "~> 0.29", only: :dev, runtime: false},
       {:excoveralls, "~> 0.18.1", only: :test, runtime: false},
-      {:igniter, "~> 0.5.50 or ~> 0.6.0", optional: true},
+      {:igniter, "~> 0.5.50 or ~> 0.6.0 or ~> 0.7.0", optional: true},
       {:mock, "~> 0.3.8", only: :test},
       {:oidcc, "~> 3.7"},
       {:phoenix, "~> 1.7", only: [:dev, :test]},
